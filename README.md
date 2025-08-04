@@ -1,1 +1,1 @@
-rename to py and execute
+rename to .sh and execute
