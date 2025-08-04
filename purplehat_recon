@@ -1,0 +1,257 @@
+#!/bin/bash
+# ===============================================================
+#  Purple Hat Cybersecurity
+#  info@purplehat.nl
+#
+#  🛠 Penetration Testing Utility
+#  This script is a multifunctional reconnaissance and testing tool
+#  that integrates:
+#    • Subdomain enumeration
+#    • Live host probing
+#    • Web screenshotting
+#    • Directory and file fuzzing
+#    • Full port scanning
+#    • TLS analysis
+#    • Vulnerability scanning
+#    • Optional TOR routing
+#
+#  Usage:
+#    ./recon.sh <domain>
+#
+#  Example:
+#    ./recon.sh example.com
+#
+#  Why these parameters?
+#    <domain>   = Target domain for reconnaissance.
+#
+#  Requirements:
+#    The following tools are required. You must install them using
+#    their respective methods.
+#
+#    Go-based tools (install via `go install` after installing Go):
+#    go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+#    go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+#    go install github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
+#    go install github.com/sensepost/gowitness@latest
+#    go install github.com/ffuf/ffuf/v2@latest
+#
+#    System-based tools (install via `sudo apt install`):
+#    sudo apt install nmap tor torsocks -y
+#
+# ===============================================================
+#
+# ## How to Run
+#
+# To use this script, follow these steps:
+#
+# **1. Install Prerequisites**
+#
+# Ensure you have Go, Nmap, Tor, and Torsocks installed on your system.
+#
+# - **Go-based tools:** Run the `go install` commands listed in the "Requirements" section.
+# - **System-based tools:** Use `sudo apt install nmap tor torsocks` to install them.
+#
+# **2. Make the Script Executable**
+#
+# Give the script execute permissions using the `chmod` command:
+#
+# ```bash
+# chmod +x recon.sh
+# ```
+#
+# **3. Run the Script**
+#
+# Execute the script with your target domain as the first argument.
+#
+# ```bash
+# ./recon.sh example.com
+# ```
+#
+# **4. Choose Reconnaissance Mode**
+#
+# The script will then prompt you to choose between "Normal Reconnaissance"
+# and "TOR Reconnaissance." Enter `1` for normal or `2` for TOR.
+#
+# The script will run and save all output files into the `purplehat_output` directory.
+#
+# ===============================================================
+
+# ========== CONFIGURATION AND SETUP ==========
+TOR_MODE=false
+# Base output directory
+OUTPUT_BASE_DIR="purplehat_output"
+
+# Define subdirectories for a cleaner structure
+SUBDOMAIN_DIR="$OUTPUT_BASE_DIR/subdomains"
+HTTPX_DIR="$OUTPUT_BASE_DIR/httpx"
+GOWITNESS_DIR="$OUTPUT_BASE_DIR/gowitness"
+NMAP_DIR="$OUTPUT_BASE_DIR/nmap"
+NUCLEI_DIR="$OUTPUT_BASE_DIR/nuclei"
+FFUF_DIR="$OUTPUT_BASE_DIR/ffuf"
+
+# Define output file paths
+SUBDOMAIN_OUTPUT="$SUBDOMAIN_DIR/subdomains.txt"
+LIVE_HOSTS_OUTPUT="$HTTPX_DIR/live_hosts.txt"
+NMAP_TARGETS_FILE="$NMAP_DIR/nmap_targets.txt"
+NMAP_FULL_SCAN_OUTPUT="$NMAP_DIR/nmap_full_scan.txt"
+TLS_REPORT_OUTPUT="$NMAP_DIR/tls_report.txt"
+NUCLEI_REPORT_OUTPUT="$NUCLEI_DIR/nuclei_report.txt"
+FFUF_OUTPUT="$FFUF_DIR/fuzz_results.txt"
+
+# ========== CHECK FOR REQUIRED TOOLS ==========
+echo "[*] Checking for required tools..."
+TOOLS=("subfinder" "httpx" "nmap" "nuclei" "torsocks" "gowitness" "ffuf")
+for tool in "${TOOLS[@]}"; do
+    if ! command -v "$tool" &> /dev/null; then
+        echo "[!] Error: The tool '$tool' is not installed."
+        echo "[!] Please install it according to the instructions in the script header."
+        exit 1
+    fi
+done
+
+# Create all necessary output directories
+mkdir -p "$SUBDOMAIN_DIR"
+mkdir -p "$HTTPX_DIR"
+mkdir -p "$GOWITNESS_DIR"
+mkdir -p "$NMAP_DIR"
+mkdir -p "$NUCLEI_DIR"
+mkdir -p "$FFUF_DIR"
+
+# ========== PARSE ARGUMENTS AND GET USER INPUT ==========
+if [[ -z "$1" ]]; then
+    echo "[!] Usage: $0 <domain>"
+    exit 1
+fi
+
+DOMAIN=$1
+
+while true; do
+    echo "---"
+    echo "Choose an option for reconnaissance mode:"
+    echo "1) Normal Reconnaissance"
+    echo "2) TOR Reconnaissance"
+    read -p "Enter your choice (1 or 2): " choice
+    case $choice in
+        1)
+            TOR_MODE=false
+            echo "[*] Normal Reconnaissance selected."
+            break
+            ;;
+        2)
+            TOR_MODE=true
+            echo "[*] TOR Reconnaissance selected. Traffic will be routed via TOR."
+            break
+            ;;
+        *)
+            echo "[!] Invalid option. Please enter 1 or 2."
+            ;;
+    esac
+done
+echo "---"
+
+
+# ========== FUNCTION: TOR WRAPPER ==========
+# All tools will now be wrapped with this function for consistency.
+run_tool() {
+    local cmd=("$@")
+    if $TOR_MODE; then
+        # Check if the command is compatible with torsocks
+        case "${cmd[0]}" in
+            "subfinder" | "httpx" | "nuclei" | "gowitness" | "ffuf")
+                torsocks "${cmd[@]}"
+                ;;
+            "nmap")
+                # nmap does not fully support torsocks
+                echo "[!] Warning: Nmap does not reliably work with torsocks. Skipping TOR routing for Nmap."
+                "${cmd[@]}"
+                ;;
+            *)
+                "${cmd[@]}"
+                ;;
+        esac
+    else
+        "${cmd[@]}"
+    fi
+}
+
+# ========== RECONNAISSANCE STEPS ==========
+echo "---"
+
+# STEP 1: SUBDOMAIN ENUMERATION
+echo "[*] Enumerating subdomains for $DOMAIN..."
+run_tool subfinder -d "$DOMAIN" -all -silent -o "$SUBDOMAIN_OUTPUT"
+echo "[+] Subdomain enumeration complete. Results in $SUBDOMAIN_OUTPUT"
+echo "---"
+
+# STEP 2: HTTP PROBING
+echo "[*] Probing for live hosts..."
+run_tool httpx -l "$SUBDOMAIN_OUTPUT" -mc 200,301,302 -o "$LIVE_HOSTS_OUTPUT"
+echo "[+] Live hosts found. Results in $LIVE_HOSTS_OUTPUT"
+echo "---"
+
+# STEP 3: WEB SCREENSHOTTING
+echo "[*] Taking screenshots of live hosts..."
+if [ -s "$LIVE_HOSTS_OUTPUT" ]; then
+    run_tool gowitness file -f "$LIVE_HOSTS_OUTPUT" -d "$GOWITNESS_DIR"
+    echo "[+] Screenshots saved to $GOWITNESS_DIR"
+else
+    echo "[!] No live hosts found. Skipping web screenshotting."
+fi
+echo "---"
+
+# STEP 4: DIRECTORY FUZZING
+echo "[*] Running basic directory fuzzing on live hosts..."
+if [ -s "$LIVE_HOSTS_OUTPUT" ]; then
+    # The -u FUZZ placeholder is necessary for ffuf to read from stdin
+    # We use a simple wordlist for a quick scan
+    for host in $(cat "$LIVE_HOSTS_OUTPUT"); do
+        run_tool ffuf -w /usr/share/wordlists/dirb/common.txt -u "$host/FUZZ" -o "$FFUF_DIR/$(echo $host | sed 's|://||g' | sed 's|/|-|g')_fuzz.txt"
+    done
+    echo "[+] Fuzzing results saved to $FFUF_DIR"
+else
+    echo "[!] No live hosts found. Skipping fuzzing."
+fi
+echo "---"
+
+# STEP 5: PORT SCANNING
+echo "[*] Running full port scan on live hosts..."
+if [ -s "$LIVE_HOSTS_OUTPUT" ]; then
+    # Extract just the domain/IP from the live hosts file for nmap
+    grep -oP '(?<=://)[^/]+' "$LIVE_HOSTS_OUTPUT" > "$NMAP_TARGETS_FILE"
+    nmap -iL "$NMAP_TARGETS_FILE" -p- --min-rate 5000 -T4 -oN "$NMAP_FULL_SCAN_OUTPUT"
+    rm "$NMAP_TARGETS_FILE"
+    echo "[+] Full port scan complete. Results in $NMAP_FULL_SCAN_OUTPUT"
+else
+    echo "[!] No live hosts found. Skipping port scanning."
+fi
+echo "---"
+
+# STEP 6: TLS ANALYSIS
+echo "[*] Performing TLS analysis on port 443..."
+if [ -s "$LIVE_HOSTS_OUTPUT" ]; then
+    # Filter for hosts with HTTPS
+    live_hosts_https=$(grep ":443" "$LIVE_HOSTS_OUTPUT" | sed 's|https://||')
+    if [ -n "$live_hosts_https" ]; then
+        echo "$live_hosts_https" | xargs -P 10 -I {} nmap --script ssl-enum-ciphers -p 443 {} >> "$TLS_REPORT_OUTPUT"
+        echo "[+] TLS analysis complete. Results in $TLS_REPORT_OUTPUT"
+    else
+        echo "[!] No hosts with port 443 found. Skipping TLS analysis."
+    fi
+else
+    echo "[!] No live hosts found. Skipping TLS analysis."
+fi
+echo "---"
+
+# STEP 7: VULNERABILITY SCANNING
+echo "[*] Running nuclei scans..."
+if [ -s "$LIVE_HOSTS_OUTPUT" ]; then
+    run_tool nuclei -l "$LIVE_HOSTS_OUTPUT" -t cves/ -t misconfiguration/ -t exposed-panels/ -o "$NUCLEI_REPORT_OUTPUT"
+    echo "[+] Nuclei scan complete. Results in $NUCLEI_REPORT_OUTPUT"
+else
+    echo "[!] No live hosts found. Skipping nuclei scans."
+fi
+
+echo "---"
+
+# ========== CLEANUP AND COMPLETION ==========
+echo "[+] Recon complete! Results are stored in the '$OUTPUT_BASE_DIR' directory."
